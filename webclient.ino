@@ -1,339 +1,209 @@
 #include <WiFi.h>
 #include <WebSocketsClient.h>
-#include <ArduinoJson.h> // Include ArduinoJson library
+#include <ArduinoJson.h>
 #include <map>
 #include <HTTPClient.h>
+#include <EEPROM.h>
 
-// Wi-Fi credentials
-// const char* ssid = "DESKTOP-7167JBJ 0804";
-// const char* password = "12345678";
+#define BUTTON_PIN 21 // GPIO for push button
+#define EEPROM_SIZE 1
 
-const char* ssid = "SM-S901W7054";
-const char* password = "tobz9999";
-
-// const char* ssid = "LAPTOP-5CEC6IRB 0434";
-// const char* password = "123456789";
-// 192.168.39.223
-// 192.168.137.231
-
-// WebSocket server details
-// const char* websocket_server = "192.168.137.1"; // Replace with your server IP or hostname
-// const int websocket_port = 8080;
-// const char* websocket_path = "/app/jf9neyn7tw8z7zvariyv"; // Replace with your app ID
-
-const char* websocket_server = "jayrtillo.online"; // Replace with your server IP or hostname
-const int websocket_port = 443;
-const char* websocket_path = "/app/jf9neyn7tw8z7zvariyv"; // Replace with your app ID
-
-// WebSocket client object
-WebSocketsClient webSocket;
-
-// const char* serverUrl = "http://192.168.137.1/api/v1/room/save"; // Replace with your server URL
-// const char* getServerUrl = "http://192.168.137.1/api/v1/room/all-state"; // Replace with your server URL
-
-const char* serverUrl = "https://jayrtillo.online/api/v1/room/save"; // Replace with your server URL
-const char* getServerUrl = "https://jayrtillo.online/api/v1/room/all-state"; // Replace with your server URL
-
-// const char* token = "R8F0zAWi8gflGJHjewDgOr0JHbUCNtHA2ROKSmzo8EyASXJW9w8Y0kJ6DZKBAArt";
-const char* token = "MQX730gLTIsgGEE8eTut7vjGKCFlLYwCSsUqAHqS5Cst7yUD0F2YhGKumfFDC84w";
-
-// Define relay pin mappings
-std::map<String, int> relayMap = {
-    {"1a", 12},
-    {"1b", 14},
-    {"2a", 27},
-    {"2b", 26},
-    {"3a", 22},
-    {"3b", 33},
-    {"4a", 32},
-    {"4b", 23}
+struct WiFiConfig {
+  const char* ssid;
+  const char* password;
 };
 
+WiFiConfig wifiConfigs[] = {
+  {"SM-S901W7054", "tobz9999"},
+  {"Benjie", "benjiegwapo"},
+  {"Fucute", "ljay12345"},
+  {"Hotspot1", "password1"},
+  {"Hotspot2", "password2"}
+};
+
+int wifiIndex = 0;
+
+std::map<String, int> relayMap = {
+    {"1a", 12}, {"1b", 14}, {"2a", 27}, {"2b", 26},
+    {"3a", 22}, {"3b", 33}, {"4a", 32}, {"4b", 23}
+};
+
+const char* websocket_server = "jayrtillo.online";
+const int websocket_port = 443;
+const char* websocket_path = "/app/jf9neyn7tw8z7zvariyv";
+WebSocketsClient webSocket;
+
+const char* serverUrl = "https://jayrtillo.online/api/v1/room/save";
+const char* getServerUrl = "https://jayrtillo.online/api/v1/room/all-state";
+const char* token = "MQX730gLTIsgGEE8eTut7vjGKCFlLYwCSsUqAHqS5Cst7yUD0F2YhGKumfFDC84w";
+
+
 String relays[] = {"1a", "1b", "2a", "2b", "3a", "3b", "4a", "4b"};
-
-const int capacity = JSON_ARRAY_SIZE(1) + JSON_OBJECT_SIZE(3) + 100;
-
-unsigned long previousMillis = 0;
-const long interval = 5000; // 1 minute
-
 const int NUM_RELAYS = 8;
 int relayStates[NUM_RELAYS];
 
-const int red = 16;
-const int green = 17;
-const int blue = 5;
+const int red = 16, green = 17, blue = 5;
+unsigned long previousMillis = 0;
+const long interval = 5000;
 
-int state = 0;
+unsigned long lastButtonPress = 0;
+
 void setup() {
-  // Start Serial communication
   Serial.begin(9600);
-  pinMode(12, OUTPUT);
-  pinMode(14, OUTPUT);
-  pinMode(27, OUTPUT);
-  pinMode(26, OUTPUT);
-  pinMode(22, OUTPUT);
-  pinMode(33, OUTPUT);
-  pinMode(32, OUTPUT);
-  pinMode(23, OUTPUT);
+  EEPROM.begin(EEPROM_SIZE);
 
-  pinMode(16, OUTPUT);
-  pinMode(17, OUTPUT);
-  pinMode(5, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(red, OUTPUT); pinMode(green, OUTPUT); pinMode(blue, OUTPUT);
 
-  digitalWrite(red, HIGH);
-  digitalWrite(blue, LOW);
-  digitalWrite(green, LOW);
-  // Set all relay pins as OUTPUT
-  // for (auto const &pair : relayMap) {
-  //   pinMode(pair.second, OUTPUT);
-  // }
+  for (auto const& pair : relayMap) pinMode(pair.second, OUTPUT);
 
+  digitalWrite(red, HIGH); digitalWrite(blue, LOW); digitalWrite(green, LOW);
   delay(5000);
-  // Connect to Wi-Fi
-  WiFi.begin(ssid, password);
-  Serial.println("Connecting to Wi-Fi...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nConnected to Wi-Fi!");
 
-  digitalWrite(blue, HIGH);
-  digitalWrite(red, LOW);
-  digitalWrite(green, LOW);
+  wifiIndex = EEPROM.read(0);
+  if (wifiIndex < 0 || wifiIndex > 3) wifiIndex = 0;
 
-  // Connect to WebSocket server
-  webSocket.beginSSL(websocket_server, websocket_port, websocket_path);
-  webSocket.onEvent(webSocketEvent);
-
-  // Enable debugging and heartbeat
-  webSocket.setReconnectInterval(5000); // Reconnect every 5 seconds
-  // webSocket.enableHeartbeat(15000, 3000, 2); // Enable heartbeat
-
+  connectToWiFi();
+  connectWebSocket();
   getInitialStates();
 }
 
 void loop() {
-  // Maintain WebSocket connection
   webSocket.loop();
 
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis;
-    if (Serial.available() > 0) {
-      String data = Serial.readStringUntil('\n'); // Read data until newline
-      Serial.print("Data received: ");
-      Serial.println(data); // Print data to Serial Monitor
-      Serial.println("Sending request");
+  if (digitalRead(BUTTON_PIN) == LOW && millis() - lastButtonPress > 1000) {
+    lastButtonPress = millis();
+    wifiIndex = (wifiIndex + 1) % 5;
+    EEPROM.write(0, wifiIndex);
+    EEPROM.commit();
+    Serial.print("Switching to WiFi #"); Serial.println(wifiIndex);
+    connectToWiFi();
+    connectWebSocket();
+  }
+
+  if (millis() - previousMillis >= interval) {
+    previousMillis = millis();
+    if (Serial.available()) {
+      String data = Serial.readStringUntil('\n');
       sendHttpPostRequest(data);
-      Serial.println("post request sent!");
     }
   }
 }
 
-void sendHttpPostRequest(String jsonPayload) {
-  // Serial.println(jsonPayload);
-  // Create an HTTPClient object
-  HTTPClient http;
+void connectToWiFi() {
+  WiFi.disconnect(true);
+  delay(1000);
+  WiFi.begin(wifiConfigs[wifiIndex].ssid, wifiConfigs[wifiIndex].password);
 
-  // Start the HTTP POST request
-  http.begin(serverUrl);
-
-  // Set headers (if needed)
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + String(token));
-
-  // Create a JSON payload
-  // String jsonPayload = "{\"roomId\":\""++"\",\"voltage\":\""++"\",\"current\":\""++"\",\"consumed\":\""++"\"}";
-
-  // Send the POST request with the JSON payload
-  int httpResponseCode = http.POST(jsonPayload);
-  Serial.println(jsonPayload);
-
-  // Check the response code
-  if (httpResponseCode > 0) {
-    Serial.print("HTTP Response code: ");
-    Serial.println(httpResponseCode);
-
-    // Get the response payload
-    String response = http.getString();
-    Serial.println("Response: " + response);
-  } else {
-    Serial.print("Error code: ");
-    Serial.println(httpResponseCode);
-
-    String response = http.getString();
-    Serial.println("Response: " + response);
+  Serial.print("Connecting to "); Serial.println(wifiConfigs[wifiIndex].ssid);
+  digitalWrite(red, HIGH); digitalWrite(blue, LOW); digitalWrite(green, LOW);
+  while (WiFi.status() != WL_CONNECTED) {
+    if (digitalRead(BUTTON_PIN) == LOW && millis() - lastButtonPress > 1000) {
+      lastButtonPress = millis();
+      wifiIndex = (wifiIndex + 1) % 5;
+      EEPROM.write(0, wifiIndex);
+      EEPROM.commit();
+      Serial.print("Switching to WiFi #"); Serial.println(wifiIndex);
+      connectToWiFi();
+      connectWebSocket();
+    }
+    delay(50); Serial.print(".");
   }
+  Serial.println("\nWiFi connected");
+  digitalWrite(blue, HIGH); digitalWrite(red, LOW); digitalWrite(green, LOW);
+}
 
-  // End the HTTP request
-  http.end();
+void connectWebSocket() {
+  webSocket.beginSSL(websocket_server, websocket_port, websocket_path);
+  webSocket.onEvent(webSocketEvent);
+  webSocket.setReconnectInterval(5000);
 }
 
 void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_DISCONNECTED:
       Serial.println("WebSocket disconnected");
-      digitalWrite(red, HIGH);
-      digitalWrite(blue, LOW);
-      digitalWrite(green, LOW);
+      digitalWrite(red, HIGH); digitalWrite(blue, LOW); digitalWrite(green, LOW);
       break;
-
     case WStype_CONNECTED:
       Serial.println("WebSocket connected");
-      digitalWrite(green, HIGH);
-      digitalWrite(red, LOW);
-      digitalWrite(blue, LOW);
-      // Subscribe to the channel after connection is established
+      digitalWrite(green, HIGH); digitalWrite(red, LOW); digitalWrite(blue, LOW);
       subscribeToChannel();
       break;
-
     case WStype_TEXT:
-      Serial.print("Received message: ");
-      Serial.println((char*)payload);
-      // Parse the JSON payload
+      Serial.print("Received message: "); Serial.println((char*)payload);
       parseJsonPayload((char*)payload);
       break;
-
     case WStype_ERROR:
       Serial.println("WebSocket error");
-      digitalWrite(red, HIGH);
-      digitalWrite(blue, LOW);
-      digitalWrite(green, LOW);
+      digitalWrite(red, HIGH); digitalWrite(blue, LOW); digitalWrite(green, LOW);
       break;
   }
 }
 
 void subscribeToChannel() {
-  // Send a subscription message to the WebSocket server
-  String subscribeMessage = "{\"event\":\"pusher:subscribe\",\"data\":{\"channel\":\"ApartmentChannel\"}}";
-  webSocket.sendTXT(subscribeMessage);
+  String msg = "{\"event\":\"pusher:subscribe\",\"data\":{\"channel\":\"ApartmentChannel\"}}";
+  webSocket.sendTXT(msg);
   Serial.println("Subscribed to ApartmentChannel");
 }
 
 void parseJsonPayload(char* payload) {
-  // Create a JSON document with sufficient size
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, payload)) return;
+  const char* dataString = doc["data"];
+  StaticJsonDocument<256> nestedDoc;
+  if (deserializeJson(nestedDoc, dataString)) return;
 
-    // Create a JSON document
-    StaticJsonDocument<512> doc;
-
-    // Deserialize JSON
-    DeserializationError error = deserializeJson(doc, payload);
-
-    // Check for errors
-    if (error) {
-        Serial.print("JSON parsing failed: ");
-        Serial.println(error.c_str());
-        return;
-    }
-
-    // Extract the nested JSON string inside "data"
-    const char* dataString = doc["data"];
-
-    // Create another JSON document for the nested data
-    StaticJsonDocument<256> nestedDoc;
-
-    // Deserialize the nested JSON
-    error = deserializeJson(nestedDoc, dataString);
-
-    if (error) {
-        Serial.print("Nested JSON parsing failed: ");
-        Serial.println(error.c_str());
-        return;
-    }
-
-    // Extract values
-    const char* apartmentId = nestedDoc["message"]["apartmentId"];
-    const char* relay = nestedDoc["message"]["relay"];
-    int state = nestedDoc["message"]["state"];
-
-    // Print values
-    Serial.print("Apartment ID: ");
-    Serial.println(apartmentId);
-    
-    Serial.print("Relay: ");
-    Serial.println(relay);
-    
-    Serial.print("State: ");
-    Serial.println(state);
-
-    // String relayStr = String(relay);
-    controlRelay(relay, state);
+  const char* relay = nestedDoc["message"]["relay"];
+  int state = nestedDoc["message"]["state"];
+  controlRelay(relay, state);
 }
 
-void splitFixedStates(String data, char delimiter, int states[NUM_RELAYS]) {
-  int startIndex = 0;
-  int endIndex;
-  
-  for (int i = 0; i < NUM_RELAYS - 1; i++) {
-    endIndex = data.indexOf(delimiter, startIndex);
-    states[i] = data.substring(startIndex, endIndex).toInt();
-    startIndex = endIndex + 1;
-  }
+void controlRelay(String relay, int state) {
+  int pin = relayMap[relay];
+  digitalWrite(pin, state == 1 ? HIGH : LOW);
+}
 
-  // Last value (no more delimiter after it)
-  states[NUM_RELAYS - 1] = data.substring(startIndex).toInt();
+void sendHttpPostRequest(String jsonPayload) {
+  HTTPClient http;
+  http.begin(serverUrl);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", "Bearer " + String(token));
+
+  int code = http.POST(jsonPayload);
+  Serial.println(jsonPayload);
+  Serial.println("Response code: " + String(code));
+  Serial.println(http.getString());
+  http.end();
 }
 
 void getInitialStates() {
   HTTPClient http;
-
-  http.begin(getServerUrl); // Make sure getServerUrl is defined
+  http.begin(getServerUrl);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Authorization", "Bearer " + String(token)); // Make sure token is defined
-
-  int httpResponseCode = http.GET();
-
-  if (httpResponseCode > 0) {
-    Serial.print("HTTP Response code: ");
-    Serial.println(httpResponseCode);
-
-    String response = http.getString();
-    Serial.println("Response: " + response);
-
-    // Parse the JSON response
-    StaticJsonDocument<200> doc;  // Increase size if needed
-    DeserializationError error = deserializeJson(doc, response);
-
-    if (!error) {
+  http.addHeader("Authorization", "Bearer " + String(token));
+  int code = http.GET();
+  if (code > 0) {
+    String resp = http.getString();
+    StaticJsonDocument<200> doc;
+    if (!deserializeJson(doc, resp)) {
       String stateData = doc["data"].as<String>();
-      Serial.println("Parsed State Data: " + stateData);
-
-      // Call split function
       splitFixedStates(stateData, '+', relayStates);
-
-      // Debug print states
       for (int i = 0; i < NUM_RELAYS; i++) {
-        Serial.print("Relay ");
-        Serial.print(i + 1);
-        Serial.print(": ");
-        Serial.println(relayStates[i]);
-
         int pin = relayMap[relays[i]];
         digitalWrite(pin, relayStates[i]);
       }
-    } else {
-      Serial.print("JSON parse error: ");
-      Serial.println(error.c_str());
     }
-
-  } else {
-    Serial.print("Error code: ");
-    Serial.println(httpResponseCode);
-    Serial.println("Response: " + http.getString());
   }
-
   http.end();
 }
 
-
-void controlRelay(String relay, int state) {
-    int pin = relayMap[relay];
-    Serial.println(pin);
-    if(state == 1){
-      digitalWrite(pin, HIGH);
-    }
-    else{
-      digitalWrite(pin, LOW);
-    }
+void splitFixedStates(String data, char delimiter, int states[NUM_RELAYS]) {
+  int start = 0, end;
+  for (int i = 0; i < NUM_RELAYS - 1; i++) {
+    end = data.indexOf(delimiter, start);
+    states[i] = data.substring(start, end).toInt();
+    start = end + 1;
+  }
+  states[NUM_RELAYS - 1] = data.substring(start).toInt();
 }
